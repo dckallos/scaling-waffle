@@ -58,10 +58,16 @@ tests/                           # tests for deterministic helper scripts
 
 ## Maintenance commands
 
+Set up the Python environment with uv:
+
 ```bash
-python scripts/docs/update_toc.py
-python scripts/docs/update_toc.py --check
-python -m unittest discover -s tests
+uv sync
+```
+
+```bash
+uv run python scripts/docs/update_toc.py
+uv run python scripts/docs/update_toc.py --check
+uv run python -m unittest discover -s tests
 ```
 
 Or run everything with:

@@ -1,0 +1,7 @@
+[project]
+name = "scaling-waffle"
+version = "0.1.0"
+description = "Markdown-first learning system for dbt, Snowflake, SQL, and analytics engineering notes."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []

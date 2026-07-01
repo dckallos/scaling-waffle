@@ -1,11 +1,16 @@
-.PHONY: toc check test
+PYTHON := uv run python
+
+.PHONY: sync toc check test
+
+sync:
+	uv sync
 
 toc:
-	python scripts/docs/update_toc.py
+	$(PYTHON) scripts/docs/update_toc.py
 
 check:
-	python scripts/docs/update_toc.py --check
-	python -m unittest discover -s tests
+	$(PYTHON) scripts/docs/update_toc.py --check
+	$(PYTHON) -m unittest discover -s tests
 
 test:
-	python -m unittest discover -s tests
+	$(PYTHON) -m unittest discover -s tests
