@@ -5,6 +5,8 @@ This directory is the source of truth for learning and review notes. It can cont
 ## Generated index
 
 <!-- docs-index:start -->
+- [Airbyte Notes](airbyte/README.md) `airbyte/README`
+- [Running Airbyte from a Mac](airbyte/running-on-mac.md) `airbyte/running-on-mac`
 - [dbt Notes](dbt/README.md) `dbt/README`
 - [ref() and Model Dependencies](dbt/models/ref.md) `dbt/models/ref`
 - [source() and Source Definitions](dbt/sources/source.md) `dbt/sources/source`

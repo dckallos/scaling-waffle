@@ -1,10 +1,20 @@
 # Glossary
 
 <!-- toc:start -->
+- [Airbyte](#airbyte)
+- [Connector](#connector)
 - [DAG](#dag)
 - [Relation](#relation)
 - [Source of truth](#source-of-truth)
 <!-- toc:end -->
+
+## Airbyte
+
+An open-source data replication platform and managed service for moving data from sources to destinations. In these notes, distinguish a full Airbyte instance from PyAirbyte, which runs connector-powered data extraction from Python without the full server.
+
+## Connector
+
+A component that knows how to read from a source system or write to a destination system. In Airbyte, connectors are the reusable building blocks behind sources, destinations, and connections.
 
 ## DAG
 
