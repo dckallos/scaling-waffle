@@ -54,6 +54,21 @@ class UpdateTocTests(unittest.TestCase):
         headings = update_toc.headings_for_toc(markdown)
         self.assertEqual(headings, [(2, "Real Heading", "real-heading")])
 
+    def test_skips_private_and_template_docs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = Path(tmp) / "docs"
+            docs.mkdir()
+            (docs / "visible.md").write_text("# Visible\n", encoding="utf-8")
+            hidden_dir = docs / "_templates"
+            hidden_dir.mkdir()
+            (hidden_dir / "concept.md").write_text("# Template\n", encoding="utf-8")
+            private_dir = docs / ".private"
+            private_dir.mkdir()
+            (private_dir / "draft.md").write_text("# Draft\n", encoding="utf-8")
+
+            files = [path.relative_to(docs).as_posix() for path in update_toc.iter_markdown_files(docs)]
+            self.assertEqual(files, ["visible.md"])
+
 
 if __name__ == "__main__":
     unittest.main()

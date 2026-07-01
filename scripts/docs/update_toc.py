@@ -3,7 +3,7 @@
 
 The script is dependency-free and intentionally conservative:
 - It only changes files that already contain recognized marker blocks.
-- It updates `docs/README.md` between docs-index markers.
+- It updates the docs README between docs-index markers.
 - It updates per-file heading TOCs between toc markers.
 """
 
@@ -36,12 +36,17 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def is_visible_doc(path: Path, docs_root: Path) -> bool:
+    """Return True when a Markdown file should appear in generated navigation."""
+    rel_parts = path.relative_to(docs_root).parts
+    return not any(part.startswith(".") or part.startswith("_") for part in rel_parts)
+
+
 def iter_markdown_files(docs_root: Path) -> list[Path]:
     files: list[Path] = []
     for path in docs_root.rglob("*.md"):
-        if any(part.startswith(".") or part.startswith("_") for part in path.relative_to(docs_root).parts):
-            continue
-        files.append(path)
+        if is_visible_doc(path, docs_root):
+            files.append(path)
     return sorted(files, key=lambda p: p.relative_to(docs_root).as_posix())
 
 
@@ -195,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Generated Markdown navigation is stale:", file=sys.stderr)
             for change in changes:
                 print(f"- {change.path}: {change.reason}", file=sys.stderr)
-            print("Run: python scripts/docs/update_toc.py", file=sys.stderr)
+            print(f"Run: python scripts/docs/update_toc.py --docs-root {docs_root}", file=sys.stderr)
             return 1
         print("Generated Markdown navigation is up to date.")
         return 0

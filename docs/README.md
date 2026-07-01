@@ -1,6 +1,6 @@
 # Learning Docs
 
-This directory is the source of truth for learning and review notes.
+This directory is the source of truth for learning and review notes. It can contain any technical topic, not just the examples that already exist.
 
 ## Generated index
 
@@ -16,14 +16,17 @@ This directory is the source of truth for learning and review notes.
 
 ## How to use these notes
 
-- Keep rough capture files close to the repo, then run `codex-add-notes ...` to refine them.
-- Prefer one durable page per concept rather than one large notebook.
+- Capture notes in whatever shape is fastest: bullets, prose, Markdown, text files, copied snippets, or stdin.
+- Run `codex-add-notes ...` to refine the raw capture into organized docs.
+- Prefer one durable page per concept rather than one giant notebook.
+- Create new `docs/<technology>/` areas when a named product or framework deserves one.
 - Keep official references on the page that depends on them.
 - Use `docs/parking-lot.md` for uncertainty instead of forcing a polished answer too early.
 
 ## Local maintenance
 
 ```bash
+python scripts/docs/outline.py --json
 python scripts/docs/update_toc.py
 python scripts/docs/update_toc.py --check
 ```

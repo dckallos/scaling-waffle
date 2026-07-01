@@ -1,87 +1,105 @@
 ---
 name: codex-add-notes
-description: Transform rough dbt, Snowflake, SQL, and data-engineering notes from pasted bullets or .md/.txt files into organized Markdown learning docs with official-doc verification, diagrams, glossary updates, parking-lot handling, and TOC maintenance.
+description: Transform raw learning notes from pasted text or arbitrary .md/.txt files into organized Markdown docs for any technical topic, with official-doc verification, outline-aware routing, diagrams when useful, glossary/parking-lot handling, and deterministic navigation maintenance.
 ---
 
 # Codex Add Notes Skill
 
-Use this skill when the user asks to add, refine, document, organize, reference, polish, or convert rough learning notes about dbt, Snowflake, SQL, analytics engineering, data ingestion, orchestration, modeling, testing, documentation, or adjacent data tools.
+Use this skill when the user asks to add, refine, organize, document, review, reference, polish, or convert rough learning notes into Markdown documentation.
 
-The goal is not to make the notes longer for their own sake. The goal is to turn rough notes into maintainable, reviewable Markdown that a learner can revisit later.
+The notes may be about any technical topic: dbt, Snowflake, Airbyte, Airflow, SQL, Python, cloud services, data engineering, orchestration, modeling, testing, infrastructure, or a product not yet represented in the repository. The workflow must not rely on a fixed list of technologies.
 
-## First files to read
+## Core principle
+
+The source notes are raw capture, not a contract. They may be bullets, fragments, pasted terminal output, prose, transcript snippets, or a mixed Markdown/Text file. Do not require headings, front matter, templates, tags, or any special source-note structure.
+
+The output docs should be organized, accurate, reviewable Markdown.
+
+## First files and commands
 
 Before editing, read:
 
-1. `AGENTS.md`
-2. `docs/README.md`
-3. `.agents/skills/codex-add-notes/references/official-docs.md`
-4. `.agents/skills/codex-add-notes/assets/topic-map.md`
-5. Any existing document that appears to match the requested topic
+1. `AGENTS.md` when present.
+2. The docs root README, usually `docs/README.md`.
+3. `.agents/skills/codex-add-notes/references/official-docs.md`.
+4. `.agents/skills/codex-add-notes/assets/topic-map.md`.
+5. Any existing document that appears to match the requested topic.
 
-If invoked by the wrapper, also read the request manifest under `.codex-add-notes/requests/` and every note file listed in it.
+Before deciding where content belongs, run the deterministic outline helper:
+
+```bash
+python scripts/docs/outline.py --docs-root docs --json
+```
+
+If the wrapper supplied a request packet, read `request.json`, `intent.txt`, every copied file under `input-files/`, and `stdin.txt` when present. The copied input files contain the user's original note text; treat them as unstructured raw input.
+
+If the user set a different docs root, use that value in place of `docs` for outline and TOC commands.
 
 ## Mandatory workflow
 
-1. **Understand the input.** Identify the subject, intended audience, source files, and whether the request is asking for a new document, an update to an existing document, a glossary entry, or a parking-lot note.
-2. **Route before writing.** Prefer updating an existing durable topic page over creating a new page. Create a new page only when the concept is stable enough to deserve its own URL.
-3. **Verify with official docs.** Use live web search and official documentation before incorporating technical claims as fact. Prefer:
-   - dbt: `docs.getdbt.com`
-   - Snowflake: `docs.snowflake.com`
-   - Airbyte: `docs.airbyte.com`
-   - Fivetran: `fivetran.com/docs`
-   - Databricks: `docs.databricks.com`
-   - OpenAI/Codex: `developers.openai.com`
-4. **Correct gently.** If the user's rough note is wrong, preserve the learning intent but rewrite the statement accurately. Add a short misconception/pitfall note when useful.
-5. **Ask only when needed.** In an interactive session, ask one concise clarifying question only when a blocking ambiguity or likely factual error cannot be resolved from official docs. In non-interactive mode, do not ask questions; move unresolved claims to `docs/parking-lot.md`.
-6. **Write maintainable Markdown.** Prefer paragraphs, short examples, and stable section headings over long loose bullet lists. Use bullets for checklists, comparisons, or steps.
-7. **Use diagrams selectively.** Add Mermaid when it clarifies DAGs, lineage, data flow, orchestration, control flow, or architecture. Keep diagrams small and close to the explanation they support.
-8. **Link the knowledge graph.** Add related-note links and glossary entries for reusable terms.
-9. **Update generated navigation.** Run `python scripts/docs/update_toc.py`. Then run `python scripts/docs/update_toc.py --check` when practical.
-10. **Report clearly.** End with changed files, official docs consulted, important corrections made, and any parking-lot items.
+1. **Collect the raw notes.** Read the intent text, copied input files, and piped stdin. Preserve the user's learning goal even when the wording is rough.
+2. **Inspect the current library.** Use `scripts/docs/outline.py --json` plus `docs/README.md` to understand existing pages, headings, and top-level topic areas.
+3. **Identify topic and product.** Determine the durable concept, the named product/tool if any, and adjacent concepts. A new product such as Airbyte or Airflow should be routed naturally; it does not need a pre-existing map entry.
+4. **Verify claims with official docs.** Use live web search and official documentation before incorporating technical claims as fact. For unknown products, search for the product's official documentation and prefer vendor/project docs over blogs.
+5. **Route before writing.** Prefer updating an existing page whose title/headings already cover the concept. Create a new page only when the concept is durable enough to deserve a URL or the existing page would become too broad.
+6. **Create generic topic areas when needed.** If no existing area fits a named technology, create `docs/<technology-slug>/README.md` and a topic page such as `docs/<technology-slug>/<topic-slug>.md`. If the note is product-neutral, prefer a stable conceptual area such as `docs/sql/`, `docs/orchestration/`, `docs/ingestion/`, `docs/modeling/`, or `docs/concepts/`.
+7. **Correct gently.** If a rough note is inaccurate, preserve the intent but rewrite the claim accurately. Add a short misconception or pitfall note when it helps later review.
+8. **Ask only when needed.** In an interactive session, ask one concise clarifying question only when a blocking ambiguity or likely factual error cannot be resolved from official docs. In non-interactive mode, do not ask questions; move unresolved claims to `docs/parking-lot.md` with context.
+9. **Write maintainable Markdown.** Use polished paragraphs, small examples, short sections, and stable headings. Use bullets for comparisons, checklists, or steps. Do not copy the user's source-note messiness into the polished docs.
+10. **Use diagrams selectively.** Add Mermaid when it clarifies lineage, DAGs, data flow, orchestration, control flow, architecture, or state transitions. Keep diagrams small and close to the explanation they support.
+11. **Link the knowledge graph.** Add related-note links and glossary entries for reusable terms when they help discoverability.
+12. **Update generated navigation.** Run `python scripts/docs/update_toc.py --docs-root docs`, then `python scripts/docs/update_toc.py --docs-root docs --check` when practical. Use the caller's docs root if different.
+13. **Report clearly.** End with changed files, official docs consulted, important corrections made, and parking-lot items.
 
-## Markdown shape
+## Output page shape
 
-Use this shape for durable concept pages. Omit sections that do not help the topic.
+The concept template is a useful starting point, not a required schema. Choose only the sections that help the topic.
+
+Common useful sections:
+
+- `## Why it matters`
+- `## Mental model`
+- `## Practical usage`
+- `## Example`
+- `## Diagram`
+- `## Common pitfalls`
+- `## Related notes`
+- `## Official references`
+
+Every durable page should have a clear H1 and should include TOC markers unless the page is intentionally tiny:
 
 ```markdown
-# Concept Name
+# Page Title
 
 <!-- toc:start -->
 <!-- toc:end -->
-
-## Why it matters
-
-## Mental model
-
-## Practical usage
-
-## Example
-
-## Diagram
-
-## Common pitfalls
-
-## Related notes
-
-## Official references
 ```
 
 Official references should use Markdown links to official documentation. When a claim depends on docs, make the source easy to inspect from the final Markdown page.
 
-## Routing defaults
+## Routing guidance
 
-Use `.agents/skills/codex-add-notes/assets/topic-map.md` for detailed routing. Common defaults:
+Use `.agents/skills/codex-add-notes/assets/topic-map.md` as a convention guide, not as a whitelist.
 
-- `ref()`, model dependencies, DAG order: `docs/dbt/models/ref.md`
-- `source()`, source freshness, source YAML: `docs/dbt/sources/source.md`
-- dbt documentation, docs blocks, descriptions: `docs/dbt/documentation.md`
-- dbt tests: `docs/dbt/tests.md`
-- dbt materializations: `docs/dbt/materializations.md`
-- Snowflake table DDL, CTAS, clone, transient/temp tables: `docs/snowflake/tables/create-table.md`
-- Snowflake loading, stages, `COPY INTO`: `docs/snowflake/loading/copy-into.md`
-- reusable definitions: `docs/glossary.md`
-- unresolved or suspect notes: `docs/parking-lot.md`
+Routing order:
+
+1. Existing page with matching title or headings.
+2. Existing technology/product area under `docs/<technology>/`.
+3. Existing conceptual area such as `docs/orchestration/` or `docs/ingestion/`.
+4. New `docs/<technology-slug>/` area for a named product/tool.
+5. New `docs/concepts/` page for product-neutral ideas.
+6. `docs/parking-lot.md` for unresolved, ambiguous, or unsupported claims.
+
+## Librarian modes
+
+If the user asks to `review`, `organize`, `audit`, or act as a note librarian, inspect the docs structure before editing.
+
+For librarian-style requests:
+
+- Run `python scripts/docs/outline.py --docs-root docs --json`.
+- Find duplicate or overlapping pages, stale parking-lot items, broken local links, missing official references, and pages with weak headings.
+- Prefer proposing moves/merges first when the change is broad.
+- In non-interactive mode, make only low-risk local Markdown edits and report larger restructuring as recommendations.
 
 ## Quality bar
 
@@ -91,7 +109,7 @@ A good note page should answer:
 - Why does it matter?
 - What should I remember during review?
 - What is the smallest useful example?
-- What are the common mistakes?
+- What are common mistakes or misconceptions?
 - Which official docs confirmed the important claims?
 
 ## Non-goals and boundaries
@@ -99,7 +117,8 @@ A good note page should answer:
 Do not:
 
 - Commit, push, branch, tag, open pull requests, or mutate GitHub metadata.
-- Run dbt against real credentials, call a data warehouse, or execute production-impacting commands.
-- Use unofficial blog posts as the only source for factual claims when official docs exist.
-- Preserve a user note as fact if official documentation contradicts it.
+- Run production, credentialed, destructive, warehouse, deployment, or remote write operations.
+- Treat unofficial blog posts as the source of truth when official docs exist.
+- Preserve a user note as fact when official documentation contradicts it.
 - Create a new document for every small note when an existing page can absorb it cleanly.
+- Treat the seed topic map or official-doc map as exhaustive.

@@ -7,41 +7,55 @@ Usage:
   codex-add-notes [options] <intent and/or note files>
 
 Examples:
-  codex-add-notes dbt: create paragraphs on ref and dependency ordering
+  codex-add-notes ref dependency ordering
   codex-add-notes reference today-notes.txt
-  codex-add-notes document dbt bullet points from dbt-notes.md
-  cat today-notes.txt | codex-add-notes dbt sources and freshness
+  codex-add-notes document bullet points from ~/notes/dbt-notes.md
+  codex-add-notes --repo ~/dev/python-learning organize ~/Desktop/python-capture.txt
+  cat today-notes.txt | codex-add-notes airflow scheduling notes
 
 Options:
+  --repo DIR, --workspace DIR  Notes repository/workspace to update.
+                              Default: CODEX_ADD_NOTES_REPO, then current Git repo.
+  --docs-root DIR             Documentation root inside the repo. Default: docs
   --exec, --non-interactive   Run `codex exec` instead of opening the interactive TUI.
-  --docs-root DIR             Documentation root to update. Default: docs
   --no-search                 Do not pass --search to Codex.
-  --dry-run                   Print the generated request and prompt without launching Codex.
+  --dry-run                   Print the generated request packet and prompt without launching Codex.
   -h, --help                  Show this help.
 
 Environment:
   CODEX_BIN                   Codex executable name/path. Default: codex
+  CODEX_ADD_NOTES_REPO        Default notes repository/workspace path.
+  CODEX_ADD_NOTES_DOCS_ROOT   Default docs root inside the repo. Default: docs
 USAGE
 }
 
 mode="interactive"
-docs_root="docs"
+repo_arg="${CODEX_ADD_NOTES_REPO:-}"
+docs_root="${CODEX_ADD_NOTES_DOCS_ROOT:-docs}"
 search_enabled="1"
 dry_run="0"
 args=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --exec|--non-interactive)
-      mode="exec"
+    --repo|--workspace)
+      if [[ $# -lt 2 ]]; then
+        echo "error: $1 requires a directory" >&2
+        exit 2
+      fi
+      repo_arg="$2"
+      shift
       ;;
     --docs-root)
       if [[ $# -lt 2 ]]; then
-        echo "error: --docs-root requires a value" >&2
+        echo "error: --docs-root requires a directory" >&2
         exit 2
       fi
       docs_root="$2"
       shift
+      ;;
+    --exec|--non-interactive)
+      mode="exec"
       ;;
     --no-search)
       search_enabled="0"
@@ -70,56 +84,143 @@ done
 
 codex_bin="${CODEX_BIN:-codex}"
 invocation_dir="$(pwd -P)"
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+
+expand_home() {
+  case "$1" in
+    "~") printf '%s\n' "$HOME" ;;
+    "~/"*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+abs_path() {
+  local raw dir base
+  raw="$(expand_home "$1")"
+  if [[ -d "$raw" ]]; then
+    (cd "$raw" && pwd -P)
+    return 0
+  fi
+  dir="$(dirname "$raw")"
+  base="$(basename "$raw")"
+  if [[ -d "$dir" ]]; then
+    printf '%s/%s\n' "$(cd "$dir" && pwd -P)" "$base"
+  else
+    return 1
+  fi
+}
+
+resolve_repo_root() {
+  local configured="$1"
+  if [[ -n "$configured" ]]; then
+    local candidate
+    candidate="$(abs_path "$configured")"
+    if [[ ! -d "$candidate" ]]; then
+      echo "error: configured notes repo does not exist: $configured" >&2
+      exit 2
+    fi
+    git -C "$candidate" rev-parse --show-toplevel 2>/dev/null || printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  if git -C "$invocation_dir" rev-parse --show-toplevel >/dev/null 2>&1; then
+    git -C "$invocation_dir" rev-parse --show-toplevel
+    return 0
+  fi
+
+  cat >&2 <<'ERR'
+error: not inside a Git repo and CODEX_ADD_NOTES_REPO is not set.
+
+Set a default repo once, for example:
+  export CODEX_ADD_NOTES_REPO="$HOME/dev/scaling-waffle"
+ERR
+  exit 2
+}
+
+repo_root="$(resolve_repo_root "$repo_arg")"
+repo_root="$(abs_path "$repo_root")"
+
+if [[ "$docs_root" = /* ]]; then
+  docs_root_abs="$(abs_path "$docs_root")"
+  case "$docs_root_abs" in
+    "$repo_root"/*) docs_root_rel="${docs_root_abs#"$repo_root"/}" ;;
+    *)
+      echo "error: --docs-root must be inside the notes repo: $docs_root" >&2
+      exit 2
+      ;;
+  esac
+else
+  docs_root_rel="${docs_root%/}"
+  docs_root_abs="$repo_root/$docs_root_rel"
+fi
+
+mkdir -p "$docs_root_abs"
 cd "$repo_root"
 
-request_dir=".codex-add-notes/requests"
-mkdir -p "$request_dir"
+request_root=".codex-add-notes/requests"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-request_file="$request_dir/${stamp}-$$.md"
+request_dir="$request_root/${stamp}-$$"
+input_dir="$request_dir/input-files"
+mkdir -p "$input_dir"
 
-note_files=()
 intent_parts=()
-looks_like_note_file() {
+note_records=()
+note_count=0
+
+looks_like_missing_file() {
   case "$1" in
-    *.md|*.markdown|*.txt|*.text) return 0 ;;
+    *.md|*.markdown|*.txt|*.text|*/*|~/*) return 0 ;;
     *) return 1 ;;
   esac
 }
 
-relpath_from_repo() {
-  python3 - "$1" "$repo_root" <<'PYREL'
-from __future__ import annotations
-import os
-import sys
-path = os.path.abspath(sys.argv[1])
-root = os.path.abspath(sys.argv[2])
-try:
-    common = os.path.commonpath([path, root])
-except ValueError:
-    common = ""
-if common != root:
-    print("")
-else:
-    print(os.path.relpath(path, root))
-PYREL
+sanitize_basename() {
+  local base sanitized
+  base="$(basename "$1")"
+  sanitized="$(printf '%s' "$base" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^[.-]*//; s/[.-]*$//' | cut -c 1-120)"
+  if [[ -z "$sanitized" ]]; then
+    sanitized="notes.txt"
+  fi
+  printf '%s\n' "$sanitized"
+}
+
+resolve_existing_file() {
+  local raw="$1"
+  local candidates=()
+  if [[ "$raw" = /* || "$raw" = ~* ]]; then
+    candidates+=("$(abs_path "$raw")")
+  else
+    candidates+=("$invocation_dir/$raw")
+    candidates+=("$repo_root/$raw")
+  fi
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      abs_path "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+json_string() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '"%s"' "$value"
 }
 
 for arg in "${args[@]}"; do
-  candidate="$arg"
-  if [[ "$candidate" != /* ]]; then
-    candidate="$invocation_dir/$candidate"
-  fi
-
-  if [[ -f "$candidate" ]]; then
-    rel="$(relpath_from_repo "$candidate")"
-    if [[ -z "$rel" ]]; then
-      echo "error: input file is outside this Git/workspace root: $arg" >&2
-      echo "Move it into the repo or pipe it through stdin." >&2
-      exit 2
-    fi
-    note_files+=("$rel")
-  elif looks_like_note_file "$arg"; then
+  if resolved="$(resolve_existing_file "$arg")"; then
+    note_count=$((note_count + 1))
+    base="$(sanitize_basename "$resolved")"
+    dest_rel="$input_dir/$(printf '%02d' "$note_count")--$base"
+    cp "$resolved" "$dest_rel"
+    note_records+=("$resolved|$dest_rel")
+  elif looks_like_missing_file "$arg"; then
     echo "error: note file not found: $arg" >&2
     exit 2
   else
@@ -127,84 +228,95 @@ for arg in "${args[@]}"; do
   fi
 done
 
-stdin_capture=""
+stdin_rel=""
 if [[ ! -t 0 ]]; then
-  stdin_capture="$request_dir/${stamp}-stdin-$$.md"
-  cat > "$stdin_capture"
-  if [[ ! -s "$stdin_capture" ]]; then
-    rm -f "$stdin_capture"
-    stdin_capture=""
+  stdin_rel="$request_dir/stdin.txt"
+  cat > "$stdin_rel"
+  if [[ ! -s "$stdin_rel" ]]; then
+    rm -f "$stdin_rel"
+    stdin_rel=""
   fi
 fi
 
-if [[ ${#intent_parts[@]} -eq 0 && ${#note_files[@]} -eq 0 && -z "$stdin_capture" ]]; then
+if [[ ${#intent_parts[@]} -eq 0 && ${#note_records[@]} -eq 0 && -z "$stdin_rel" ]]; then
   usage >&2
   exit 2
 fi
 
 intent="${intent_parts[*]:-}"
-{
-  echo "# codex-add-notes request"
-  echo
-  echo "- Created UTC: $stamp"
-  echo "- Mode: $mode"
-  echo "- Docs root: $docs_root"
-  echo "- Invocation directory: $invocation_dir"
-  echo
-  echo "## User intent"
-  if [[ -n "$intent" ]]; then
-    printf '%s\n' "$intent"
-  else
-    echo "(No separate intent text was provided. Infer intent from the note files and/or stdin notes.)"
-  fi
-  echo
-  echo "## Input note files"
-  if [[ ${#note_files[@]} -gt 0 ]]; then
-    for file in "${note_files[@]}"; do
-      printf -- '- `%s`\n' "$file"
-    done
-  else
-    echo "(None.)"
-  fi
-  echo
-  echo "## Piped stdin notes"
-  if [[ -n "$stdin_capture" ]]; then
-    echo
-    echo '```text'
-    cat "$stdin_capture"
-    echo '```'
-  else
-    echo "(None.)"
-  fi
-} > "$request_file"
+printf '%s\n' "$intent" > "$request_dir/intent.txt"
 
-prompt_file="$request_dir/${stamp}-prompt-$$.txt"
+request_json="$request_dir/request.json"
+{
+  echo "{"
+  printf '  "created_utc": %s,\n' "$(json_string "$stamp")"
+  printf '  "mode": %s,\n' "$(json_string "$mode")"
+  printf '  "repo_root": %s,\n' "$(json_string "$repo_root")"
+  printf '  "docs_root": %s,\n' "$(json_string "$docs_root_rel")"
+  printf '  "invocation_directory": %s,\n' "$(json_string "$invocation_dir")"
+  printf '  "intent_file": %s,\n' "$(json_string "$request_dir/intent.txt")"
+  if [[ -n "$stdin_rel" ]]; then
+    printf '  "stdin_file": %s,\n' "$(json_string "$stdin_rel")"
+  else
+    printf '  "stdin_file": null,\n'
+  fi
+  echo '  "input_files": ['
+  for i in "${!note_records[@]}"; do
+    record="${note_records[$i]}"
+    original="${record%%|*}"
+    copied="${record#*|}"
+    comma=","
+    if [[ $i -eq $((${#note_records[@]} - 1)) ]]; then
+      comma=""
+    fi
+    printf '    {"original_path": %s, "copied_path": %s}%s\n' \
+      "$(json_string "$original")" \
+      "$(json_string "$copied")" \
+      "$comma"
+  done
+  echo '  ]'
+  echo "}"
+} > "$request_json"
+
+prompt_file="$request_dir/prompt.txt"
 {
   echo 'Use $codex-add-notes.'
   echo
-  echo "Request manifest: $request_file"
-  echo "Docs root: $docs_root"
+  echo "Request packet directory: $request_dir"
+  echo "Request JSON: $request_json"
+  echo "Docs root: $docs_root_rel"
   echo
   echo "Process this request end-to-end:"
-  echo "- Read the request manifest and every listed note file."
-  echo "- Verify technical claims against official documentation using live web search unless --no-search was used."
+  echo "- Read request.json, intent.txt, every copied input file, and stdin.txt when present."
+  echo "- Treat all input notes as raw capture. Do not expect headings, YAML front matter, special bullets, or any note template."
+  echo "- Run python scripts/docs/outline.py --docs-root '$docs_root_rel' --json before deciding where the content belongs."
+  echo "- Use the outline plus existing docs to update the best existing page before creating a new one."
+  echo "- If a new technology or product appears, create an appropriate docs/<technology-slug>/ area rather than waiting for a hardcoded map entry."
+  if [[ "$search_enabled" == "1" ]]; then
+    echo "- Verify technical claims against current official documentation using live web search."
+  else
+    echo "- Live web search was disabled by the caller; do not present unverified technical claims as facts."
+  fi
   if [[ "$mode" == "interactive" ]]; then
     echo "- Ask one concise clarification question before editing only if a blocking ambiguity or likely factual error cannot be resolved from official docs."
   else
-    echo "- Do not ask questions. If a claim is ambiguous or unsupported, move it to docs/parking-lot.md with context."
+    echo "- Do not ask questions. If a claim is ambiguous or unsupported, move it to ${docs_root_rel}/parking-lot.md with context."
   fi
-  echo "- Update or create the appropriate Markdown learning notes under $docs_root."
-  echo "- Add Mermaid diagrams, glossary entries, cross-links, and official reference links when useful."
-  echo "- Run python scripts/docs/update_toc.py and, if practical, python scripts/docs/update_toc.py --check."
+  echo "- Update or create Markdown learning notes under $docs_root_rel."
+  echo "- Add Mermaid diagrams, glossary entries, cross-links, and official reference links only when useful."
+  echo "- Run python scripts/docs/update_toc.py --docs-root '$docs_root_rel' and then python scripts/docs/update_toc.py --docs-root '$docs_root_rel' --check when practical."
   echo "- Do not commit, push, open PRs, or mutate anything outside this workspace."
-  echo "- End with a concise summary of files changed, official docs consulted, and any parking-lot items."
+  echo "- End with a concise summary of files changed, official docs consulted, important corrections made, and any parking-lot items."
 } > "$prompt_file"
 
 if [[ "$dry_run" == "1" ]]; then
-  echo "--- request manifest: $request_file ---"
-  cat "$request_file"
+  echo "request_dir=$request_dir"
+  echo "request_json=$request_json"
   echo
-  echo "--- codex prompt: $prompt_file ---"
+  cat "$request_json"
+  echo
+  echo "prompt_file=$prompt_file"
+  echo
   cat "$prompt_file"
   exit 0
 fi
