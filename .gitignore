@@ -1,0 +1,7 @@
+.codex-add-notes/requests/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+.env
+.venv/

@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  codex-add-notes [options] <intent and/or note files>
+
+Examples:
+  codex-add-notes dbt: create paragraphs on ref and dependency ordering
+  codex-add-notes reference today-notes.txt
+  codex-add-notes document dbt bullet points from dbt-notes.md
+  cat today-notes.txt | codex-add-notes dbt sources and freshness
+
+Options:
+  --exec, --non-interactive   Run `codex exec` instead of opening the interactive TUI.
+  --docs-root DIR             Documentation root to update. Default: docs
+  --no-search                 Do not pass --search to Codex.
+  --dry-run                   Print the generated request and prompt without launching Codex.
+  -h, --help                  Show this help.
+
+Environment:
+  CODEX_BIN                   Codex executable name/path. Default: codex
+USAGE
+}
+
+mode="interactive"
+docs_root="docs"
+search_enabled="1"
+dry_run="0"
+args=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --exec|--non-interactive)
+      mode="exec"
+      ;;
+    --docs-root)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --docs-root requires a value" >&2
+        exit 2
+      fi
+      docs_root="$2"
+      shift
+      ;;
+    --no-search)
+      search_enabled="0"
+      ;;
+    --dry-run)
+      dry_run="1"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do
+        args+=("$1")
+        shift
+      done
+      break
+      ;;
+    *)
+      args+=("$1")
+      ;;
+  esac
+  shift
+done
+
+codex_bin="${CODEX_BIN:-codex}"
+invocation_dir="$(pwd -P)"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+cd "$repo_root"
+
+request_dir=".codex-add-notes/requests"
+mkdir -p "$request_dir"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+request_file="$request_dir/${stamp}-$$.md"
+
+note_files=()
+intent_parts=()
+looks_like_note_file() {
+  case "$1" in
+    *.md|*.markdown|*.txt|*.text) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+relpath_from_repo() {
+  python3 - "$1" "$repo_root" <<'PYREL'
+from __future__ import annotations
+import os
+import sys
+path = os.path.abspath(sys.argv[1])
+root = os.path.abspath(sys.argv[2])
+try:
+    common = os.path.commonpath([path, root])
+except ValueError:
+    common = ""
+if common != root:
+    print("")
+else:
+    print(os.path.relpath(path, root))
+PYREL
+}
+
+for arg in "${args[@]}"; do
+  candidate="$arg"
+  if [[ "$candidate" != /* ]]; then
+    candidate="$invocation_dir/$candidate"
+  fi
+
+  if [[ -f "$candidate" ]]; then
+    rel="$(relpath_from_repo "$candidate")"
+    if [[ -z "$rel" ]]; then
+      echo "error: input file is outside this Git/workspace root: $arg" >&2
+      echo "Move it into the repo or pipe it through stdin." >&2
+      exit 2
+    fi
+    note_files+=("$rel")
+  elif looks_like_note_file "$arg"; then
+    echo "error: note file not found: $arg" >&2
+    exit 2
+  else
+    intent_parts+=("$arg")
+  fi
+done
+
+stdin_capture=""
+if [[ ! -t 0 ]]; then
+  stdin_capture="$request_dir/${stamp}-stdin-$$.md"
+  cat > "$stdin_capture"
+  if [[ ! -s "$stdin_capture" ]]; then
+    rm -f "$stdin_capture"
+    stdin_capture=""
+  fi
+fi
+
+if [[ ${#intent_parts[@]} -eq 0 && ${#note_files[@]} -eq 0 && -z "$stdin_capture" ]]; then
+  usage >&2
+  exit 2
+fi
+
+intent="${intent_parts[*]:-}"
+{
+  echo "# codex-add-notes request"
+  echo
+  echo "- Created UTC: $stamp"
+  echo "- Mode: $mode"
+  echo "- Docs root: $docs_root"
+  echo "- Invocation directory: $invocation_dir"
+  echo
+  echo "## User intent"
+  if [[ -n "$intent" ]]; then
+    printf '%s\n' "$intent"
+  else
+    echo "(No separate intent text was provided. Infer intent from the note files and/or stdin notes.)"
+  fi
+  echo
+  echo "## Input note files"
+  if [[ ${#note_files[@]} -gt 0 ]]; then
+    for file in "${note_files[@]}"; do
+      printf -- '- `%s`\n' "$file"
+    done
+  else
+    echo "(None.)"
+  fi
+  echo
+  echo "## Piped stdin notes"
+  if [[ -n "$stdin_capture" ]]; then
+    echo
+    echo '```text'
+    cat "$stdin_capture"
+    echo '```'
+  else
+    echo "(None.)"
+  fi
+} > "$request_file"
+
+prompt_file="$request_dir/${stamp}-prompt-$$.txt"
+{
+  echo 'Use $codex-add-notes.'
+  echo
+  echo "Request manifest: $request_file"
+  echo "Docs root: $docs_root"
+  echo
+  echo "Process this request end-to-end:"
+  echo "- Read the request manifest and every listed note file."
+  echo "- Verify technical claims against official documentation using live web search unless --no-search was used."
+  if [[ "$mode" == "interactive" ]]; then
+    echo "- Ask one concise clarification question before editing only if a blocking ambiguity or likely factual error cannot be resolved from official docs."
+  else
+    echo "- Do not ask questions. If a claim is ambiguous or unsupported, move it to docs/parking-lot.md with context."
+  fi
+  echo "- Update or create the appropriate Markdown learning notes under $docs_root."
+  echo "- Add Mermaid diagrams, glossary entries, cross-links, and official reference links when useful."
+  echo "- Run python scripts/docs/update_toc.py and, if practical, python scripts/docs/update_toc.py --check."
+  echo "- Do not commit, push, open PRs, or mutate anything outside this workspace."
+  echo "- End with a concise summary of files changed, official docs consulted, and any parking-lot items."
+} > "$prompt_file"
+
+if [[ "$dry_run" == "1" ]]; then
+  echo "--- request manifest: $request_file ---"
+  cat "$request_file"
+  echo
+  echo "--- codex prompt: $prompt_file ---"
+  cat "$prompt_file"
+  exit 0
+fi
+
+if ! command -v "$codex_bin" >/dev/null 2>&1; then
+  echo "error: Codex CLI not found: $codex_bin" >&2
+  echo "Install Codex CLI or set CODEX_BIN to the executable path." >&2
+  exit 127
+fi
+
+prompt="$(cat "$prompt_file")"
+
+if [[ "$mode" == "interactive" ]]; then
+  cmd=("$codex_bin" --cd "$repo_root" --sandbox workspace-write --ask-for-approval on-request)
+  if [[ "$search_enabled" == "1" ]]; then
+    cmd+=(--search)
+  fi
+  cmd+=("$prompt")
+else
+  cmd=("$codex_bin" exec --cd "$repo_root" --sandbox workspace-write --ask-for-approval never)
+  if [[ "$search_enabled" == "1" ]]; then
+    cmd+=(--search)
+  fi
+  cmd+=("$prompt")
+fi
+
+exec "${cmd[@]}"
