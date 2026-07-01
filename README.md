@@ -7,8 +7,8 @@ Use the bootstrap script to populate this repository from a zip archive that alr
 exists on your machine:
 
 ```bash
-python3 /home/runner/work/scaling-waffle/scaling-waffle/scripts/kickstart_from_zip.py /path/to/source.zip \
-  --destination /home/runner/work/scaling-waffle/scaling-waffle \
+python3 ./scripts/kickstart_from_zip.py /path/to/source.zip \
+  --destination "$(pwd)" \
   --strip-components 1
 ```
 

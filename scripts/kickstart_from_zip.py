@@ -38,7 +38,7 @@ def sanitize_member(name: str, strip_components: int) -> Path | None:
     if raw_path.is_absolute():
         raise ValueError(f"Refusing to extract unsafe absolute path: {name}")
 
-    parts = [part for part in raw_path.parts if part not in ("", ".")]
+    parts = list(raw_path.parts)
 
     if len(parts) <= strip_components:
         return None
