@@ -4,13 +4,17 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  codex-add-notes [options] <intent and/or note files>
+  codex-add-notes [options] [intent and/or note files]
+  codex-add-notes [options]
 
 Examples:
+  codex-add-notes
+  codex-add-notes document ways for me to run Airbyte from my Mac
   codex-add-notes ref dependency ordering
   codex-add-notes reference today-notes.txt
   codex-add-notes document bullet points from ~/notes/dbt-notes.md
   codex-add-notes --repo ~/dev/python-learning organize ~/Desktop/python-capture.txt
+  codex-add-notes --exec
   cat today-notes.txt | codex-add-notes airflow scheduling notes
 
 Options:
@@ -18,6 +22,7 @@ Options:
                               Default: CODEX_ADD_NOTES_REPO, then current Git repo.
   --docs-root DIR             Documentation root inside the repo. Default: docs
   --exec, --non-interactive   Run `codex exec` instead of opening the interactive TUI.
+                              With no input, the wrapper asks an intake questionnaire first.
   --no-search                 Do not pass --search to Codex.
   --dry-run                   Print the generated request packet and prompt without launching Codex.
   -h, --help                  Show this help.
@@ -113,7 +118,10 @@ resolve_repo_root() {
   local configured="$1"
   if [[ -n "$configured" ]]; then
     local candidate
-    candidate="$(abs_path "$configured")"
+    if ! candidate="$(abs_path "$configured")"; then
+      echo "error: configured notes repo does not exist: $configured" >&2
+      exit 2
+    fi
     if [[ ! -d "$candidate" ]]; then
       echo "error: configured notes repo does not exist: $configured" >&2
       exit 2
@@ -140,7 +148,10 @@ repo_root="$(resolve_repo_root "$repo_arg")"
 repo_root="$(abs_path "$repo_root")"
 
 if [[ "$docs_root" = /* ]]; then
-  docs_root_abs="$(abs_path "$docs_root")"
+  if ! docs_root_abs="$(abs_path "$docs_root")"; then
+    echo "error: --docs-root does not exist or cannot be resolved: $docs_root" >&2
+    exit 2
+  fi
   case "$docs_root_abs" in
     "$repo_root"/*) docs_root_rel="${docs_root_abs#"$repo_root"/}" ;;
     *)
@@ -186,8 +197,11 @@ sanitize_basename() {
 resolve_existing_file() {
   local raw="$1"
   local candidates=()
+  local resolved=""
   if [[ "$raw" = /* || "$raw" = ~* ]]; then
-    candidates+=("$(abs_path "$raw")")
+    if resolved="$(abs_path "$raw" 2>/dev/null)"; then
+      candidates+=("$resolved")
+    fi
   else
     candidates+=("$invocation_dir/$raw")
     candidates+=("$repo_root/$raw")
@@ -211,6 +225,91 @@ json_string() {
   value="${value//$'\r'/\\r}"
   value="${value//$'\t'/\\t}"
   printf '"%s"' "$value"
+}
+
+can_prompt_tty() {
+  [[ -r /dev/tty && -w /dev/tty ]]
+}
+
+prompt_tty() {
+  local prompt="$1"
+  local default="${2:-}"
+  local answer=""
+  if [[ -n "$default" ]]; then
+    printf '%s [%s]: ' "$prompt" "$default" > /dev/tty
+  else
+    printf '%s: ' "$prompt" > /dev/tty
+  fi
+  IFS= read -r answer < /dev/tty || true
+  if [[ -z "$answer" ]]; then
+    printf '%s\n' "$default"
+  else
+    printf '%s\n' "$answer"
+  fi
+}
+
+prompt_required_tty() {
+  local prompt="$1"
+  local answer=""
+  while [[ -z "$answer" ]]; do
+    printf '%s: ' "$prompt" > /dev/tty
+    IFS= read -r answer < /dev/tty || true
+    if [[ -z "$answer" ]]; then
+      echo "Please enter a topic or press Ctrl-C to cancel." > /dev/tty
+    fi
+  done
+  printf '%s\n' "$answer"
+}
+
+prompt_yes_no_tty() {
+  local prompt="$1"
+  local default="${2:-N}"
+  local answer=""
+  local normalized_default
+  normalized_default="$(printf '%s' "$default" | tr '[:lower:]' '[:upper:]')"
+  if [[ "$normalized_default" == "Y" ]]; then
+    printf '%s [Y/n]: ' "$prompt" > /dev/tty
+  else
+    printf '%s [y/N]: ' "$prompt" > /dev/tty
+  fi
+  IFS= read -r answer < /dev/tty || true
+  answer="$(printf '%s' "${answer:-$normalized_default}" | tr '[:lower:]' '[:upper:]')"
+  case "$answer" in
+    Y|YES) printf 'yes\n' ;;
+    *) printf 'no\n' ;;
+  esac
+}
+
+write_exec_intake() {
+  local target="$1"
+  local topic citations wanted_citations destination depth extra diagrams
+
+  echo "No inline topic, note file, or stdin notes were provided." > /dev/tty
+  echo "Answer a few questions so non-interactive Codex has enough context." > /dev/tty
+  echo > /dev/tty
+
+  topic="$(prompt_required_tty "What do you want to add documentation about?")"
+  wanted_citations="$(prompt_yes_no_tty "Do you want to include specific citations or official docs URLs?" "N")"
+  citations="none"
+  if [[ "$wanted_citations" == "yes" ]]; then
+    citations="$(prompt_tty "Paste official docs URLs or named sources" "none")"
+  fi
+  destination="$(prompt_tty "Preferred destination or topic area" "auto")"
+  depth="$(prompt_tty "Preferred depth" "review-friendly practical overview")"
+  diagrams="$(prompt_yes_no_tty "Should Codex add examples or diagrams when useful?" "Y")"
+  extra="$(prompt_tty "Any extra rough bullets, constraints, or context" "none")"
+
+  {
+    echo "Topic: $topic"
+    echo "Specific citations requested: $wanted_citations"
+    echo "Citation hints: $citations"
+    echo "Preferred destination: $destination"
+    echo "Preferred depth: $depth"
+    echo "Examples or diagrams when useful: $diagrams"
+    echo "Extra context: $extra"
+  } > "$target"
+
+  printf '%s\n' "$topic"
 }
 
 for arg in "${args[@]}"; do
@@ -238,12 +337,50 @@ if [[ ! -t 0 ]]; then
   fi
 fi
 
+intent="${intent_parts[*]:-}"
+input_mode="provided"
+intake_file=""
+no_user_input="0"
+
 if [[ ${#intent_parts[@]} -eq 0 && ${#note_records[@]} -eq 0 && -z "$stdin_rel" ]]; then
-  usage >&2
-  exit 2
+  no_user_input="1"
+  if [[ "$mode" == "interactive" ]]; then
+    input_mode="codex_interview"
+    if ! can_prompt_tty && [[ "$dry_run" != "1" ]]; then
+      echo "error: no input was provided and an interactive terminal is required for Codex intake." >&2
+      echo "Pass an inline topic, pipe notes through stdin, provide a note file, or run from a terminal." >&2
+      exit 2
+    fi
+  else
+    intake_file="$request_dir/intake-answers.txt"
+    if [[ "$dry_run" == "1" ]]; then
+      input_mode="shell_intake_unanswered"
+      : > "$intake_file"
+    elif can_prompt_tty; then
+      input_mode="shell_intake"
+      intent="$(write_exec_intake "$intake_file")"
+    else
+      cat >&2 <<'ERR'
+error: --exec was requested with no topic, no note file, and no stdin notes, but no terminal is available for intake questions.
+
+Run one of these instead:
+  codex-add-notes --exec document ways for me to run Airbyte from my Mac
+  codex-add-notes --exec reference ~/Desktop/today-notes.txt
+  codex-add-notes
+ERR
+      exit 2
+    fi
+  fi
+elif [[ ${#intent_parts[@]} -gt 0 && ${#note_records[@]} -eq 0 && -z "$stdin_rel" ]]; then
+  input_mode="inline_topic"
+elif [[ ${#intent_parts[@]} -eq 0 && ${#note_records[@]} -gt 0 && -z "$stdin_rel" ]]; then
+  input_mode="note_files_only"
+elif [[ ${#intent_parts[@]} -eq 0 && ${#note_records[@]} -eq 0 && -n "$stdin_rel" ]]; then
+  input_mode="stdin_only"
+else
+  input_mode="mixed"
 fi
 
-intent="${intent_parts[*]:-}"
 printf '%s\n' "$intent" > "$request_dir/intent.txt"
 
 request_json="$request_dir/request.json"
@@ -251,15 +388,28 @@ request_json="$request_dir/request.json"
   echo "{"
   printf '  "created_utc": %s,\n' "$(json_string "$stamp")"
   printf '  "mode": %s,\n' "$(json_string "$mode")"
+  printf '  "input_mode": %s,\n' "$(json_string "$input_mode")"
   printf '  "repo_root": %s,\n' "$(json_string "$repo_root")"
   printf '  "docs_root": %s,\n' "$(json_string "$docs_root_rel")"
   printf '  "invocation_directory": %s,\n' "$(json_string "$invocation_dir")"
   printf '  "intent_file": %s,\n' "$(json_string "$request_dir/intent.txt")"
+  if [[ -n "$intake_file" ]]; then
+    printf '  "intake_file": %s,\n' "$(json_string "$intake_file")"
+  else
+    printf '  "intake_file": null,\n'
+  fi
   if [[ -n "$stdin_rel" ]]; then
     printf '  "stdin_file": %s,\n' "$(json_string "$stdin_rel")"
   else
     printf '  "stdin_file": null,\n'
   fi
+  echo '  "intake_questions": ['
+  printf '    %s,\n' "$(json_string "What do you want to add documentation about?")"
+  printf '    %s,\n' "$(json_string "Do you want to include specific citations or official docs URLs? Default: no.")"
+  printf '    %s,\n' "$(json_string "Do you have a preferred destination/topic area, or should Codex choose automatically? Default: auto.")"
+  printf '    %s,\n' "$(json_string "What depth should the page target? Default: review-friendly practical overview.")"
+  printf '    %s\n' "$(json_string "Do you have rough bullets, examples, constraints, or misconceptions to include? Optional.")"
+  echo '  ],'
   echo '  "input_files": ['
   for i in "${!note_records[@]}"; do
     record="${note_records[$i]}"
@@ -285,10 +435,23 @@ prompt_file="$request_dir/prompt.txt"
   echo "Request packet directory: $request_dir"
   echo "Request JSON: $request_json"
   echo "Docs root: $docs_root_rel"
+  echo "Input mode: $input_mode"
   echo
   echo "Process this request end-to-end:"
-  echo "- Read request.json, intent.txt, every copied input file, and stdin.txt when present."
+  echo "- Read request.json, intent.txt, every copied input file, stdin.txt when present, and intake-answers.txt when present."
   echo "- Treat all input notes as raw capture. Do not expect headings, YAML front matter, special bullets, or any note template."
+  echo "- If request contains only intent text and no source note files, treat the intent as a valid topic request. Do not require a source document."
+  if [[ "$input_mode" == "codex_interview" ]]; then
+    echo "- This is a zero-input interactive intake session. Before editing any docs, ask the user the intake questions from request.json in one concise batch."
+    echo "- The first required question is: What do you want to add documentation about?"
+    echo "- Include: whether they want specific citations or official docs URLs, preferred destination/topic area, preferred depth, and optional rough bullets/examples."
+    echo "- Defaults: citations=no, destination=auto, depth=review-friendly practical overview, examples/diagrams=yes when useful."
+    echo "- Do not edit files until the user answers with at least a topic."
+  elif [[ "$input_mode" == "shell_intake" ]]; then
+    echo "- The wrapper already collected zero-input --exec intake answers in intake-answers.txt. Use those answers and do not ask follow-up questions."
+  elif [[ "$input_mode" == "shell_intake_unanswered" ]]; then
+    echo "- Dry-run only: this would ask local shell intake questions before a real zero-input --exec run."
+  fi
   echo "- Run python scripts/docs/outline.py --docs-root '$docs_root_rel' --json before deciding where the content belongs."
   echo "- Use the outline plus existing docs to update the best existing page before creating a new one."
   echo "- If a new technology or product appears, create an appropriate docs/<technology-slug>/ area rather than waiting for a hardcoded map entry."
@@ -298,9 +461,10 @@ prompt_file="$request_dir/prompt.txt"
     echo "- Live web search was disabled by the caller; do not present unverified technical claims as facts."
   fi
   if [[ "$mode" == "interactive" ]]; then
-    echo "- Ask one concise clarification question before editing only if a blocking ambiguity or likely factual error cannot be resolved from official docs."
+    echo "- Ask helpful follow-up questions before editing when the request is broad, preference-sensitive, or likely to produce a better note with user input."
+    echo "- Do not ask about nonessential details when the user already gave a clear, actionable documentation topic."
   else
-    echo "- Do not ask questions. If a claim is ambiguous or unsupported, move it to ${docs_root_rel}/parking-lot.md with context."
+    echo "- Do not ask questions inside Codex exec. If a claim is ambiguous or unsupported, move it to ${docs_root_rel}/parking-lot.md with context."
   fi
   echo "- Update or create Markdown learning notes under $docs_root_rel."
   echo "- Add Mermaid diagrams, glossary entries, cross-links, and official reference links only when useful."

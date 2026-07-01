@@ -7,7 +7,10 @@ When the user asks to add, refine, document, organize, review, reference, polish
 ## Documentation rules
 
 - Treat user notes as rough, possibly incomplete, and possibly wrong.
-- Do not require any structure in source notes. They may be bullets, fragments, pasted prose, transcripts, or mixed Markdown/Text.
+- Do not require any structure in source notes. They may be bullets, fragments, pasted prose, transcripts, mixed Markdown/Text, or no source file at all.
+- Treat short topic requests such as `document ways for me to run Airbyte from my Mac` as valid documentation requests.
+- For zero-input interactive sessions, ask an intake batch before editing: topic, citation preferences, destination preference, depth, and optional context.
+- For zero-input non-interactive sessions, use the wrapper-collected intake answers and do not ask questions inside Codex.
 - Verify technical claims against official documentation before incorporating them as fact.
 - Prefer official docs for the named product or project. If the product is new to this repo, find its official docs instead of forcing the note into an existing dbt/Snowflake area.
 - Preserve the user's intended learning goal, but correct inaccuracies gently.

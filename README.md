@@ -1,14 +1,14 @@
 # Codex Notes Workflow
 
-A small, Git-ready workflow for turning rough learning notes into organized Markdown documentation with Codex.
+A small, Git-ready workflow for turning rough learning notes, minimal topic requests, or interactive intake answers into organized Markdown documentation with Codex.
 
 The workflow is intentionally simple:
 
-1. Capture notes anywhere as plain text, Markdown, pasted text, or piped stdin.
-2. Run `codex-add-notes ...` from any directory.
-3. Codex reads the current docs outline, verifies technical claims against official documentation, updates the right Markdown page, adds diagrams when useful, and runs deterministic navigation maintenance.
+1. Capture notes anywhere as plain text, Markdown, pasted text, or piped stdin — or do not capture notes first at all.
+2. Run `codex-add-notes ...` from any directory, or run `codex-add-notes` by itself to start an intake session.
+3. Codex reads the current docs outline, asks helpful questions when appropriate, verifies technical claims against official documentation, updates the right Markdown page, adds diagrams when useful, and runs deterministic navigation maintenance.
 
-The input notes do **not** need a template. They can be messy bullets, fragments, paragraphs, copied docs snippets, or a normal `.txt` / `.md` file.
+The input notes do **not** need a template. They can be messy bullets, fragments, paragraphs, copied docs snippets, or a normal `.txt` / `.md` file. You can also skip files entirely and give a direct topic request.
 
 ## Install for use from anywhere
 
@@ -22,9 +22,12 @@ chmod +x bin/codex-add-notes
 Add this to `~/.zshrc` so the command works outside `~/dev/scaling-waffle`:
 
 ```bash
-# codex-add-notes default workspace
+# scaling-waffle documentation workflow
 export CODEX_ADD_NOTES_REPO="$HOME/dev/scaling-waffle"
 export PATH="$CODEX_ADD_NOTES_REPO/bin:$PATH"
+
+# Personal alias: use `scaling-waffle` anywhere you would use `codex-add-notes`.
+alias scaling-waffle='codex-add-notes'
 ```
 
 Then reload your shell:
@@ -36,27 +39,82 @@ source ~/.zshrc
 Now these work from anywhere:
 
 ```bash
-codex-add-notes reference ~/Desktop/today-notes.txt
-codex-add-notes document ~/notes/airbyte.md
-codex-add-notes airflow scheduling and backfill notes
-cat ~/Desktop/snowflake-capture.txt | codex-add-notes snowflake loading
+scaling-waffle
+scaling-waffle document ways for me to run Airbyte from my Mac
+scaling-waffle reference ~/Desktop/today-notes.txt
+scaling-waffle document ~/notes/airbyte.md
+scaling-waffle airflow scheduling and backfill notes
+cat ~/Desktop/snowflake-capture.txt | scaling-waffle snowflake loading
 ```
+
+The public script is still named `codex-add-notes`; `scaling-waffle` is only your personal shell alias.
 
 For a one-off different notes repo, use `--repo`:
 
 ```bash
-codex-add-notes --repo ~/dev/python-learning reference ~/Desktop/python-notes.txt
+scaling-waffle --repo ~/dev/python-learning reference ~/Desktop/python-notes.txt
 ```
+
+## Ways to start
+
+### 1. Start an intake session
+
+```bash
+scaling-waffle
+```
+
+This opens interactive Codex and tells it to ask you:
+
+- what you want to add documentation about;
+- whether you want specific citations or official docs URLs included, defaulting to no;
+- whether you have a preferred destination/topic area, defaulting to auto;
+- what depth you want, defaulting to a review-friendly practical overview;
+- whether you have rough bullets, examples, constraints, or misconceptions to include.
+
+Codex should not edit files until you answer with at least a topic.
+
+### 2. Give a minimal inline topic
+
+```bash
+scaling-waffle document ways for me to run Airbyte from my Mac
+```
+
+This does **not** require a Markdown or text file. Codex treats the inline text as the documentation request, checks official docs, then creates or updates the appropriate Markdown page.
+
+### 3. Point at a note file
+
+```bash
+scaling-waffle reference ~/Desktop/today-notes.txt
+```
+
+The wrapper copies the source file into an ignored internal request packet so Codex can read it inside the workspace. Your source file can live outside the repo and does not need a structure.
+
+### 4. Pipe notes through stdin
+
+```bash
+cat ~/Desktop/capture.txt | scaling-waffle dbt source freshness
+```
+
+The piped text is captured as raw input.
 
 ## Interactive and non-interactive modes
 
-By default, the wrapper launches the interactive Codex TUI. That lets Codex ask one concise clarification question when a note is ambiguous or appears factually wrong.
+By default, the wrapper launches the interactive Codex TUI. That gives Codex room to ask helpful questions before editing when your request is broad, ambiguous, preference-sensitive, or likely to benefit from user context.
 
 For an unattended pass, use:
 
 ```bash
-codex-add-notes --exec reference ~/Desktop/today-notes.txt
+scaling-waffle --exec reference ~/Desktop/today-notes.txt
+scaling-waffle --exec document ways for me to run Airbyte from my Mac
 ```
+
+If you run zero-input non-interactive mode:
+
+```bash
+scaling-waffle --exec
+```
+
+the wrapper asks a local terminal intake questionnaire first, because `codex exec` is designed for non-interactive scripted runs. After you answer, it launches `codex exec` with those answers preloaded.
 
 In non-interactive mode, Codex should not ask questions. Ambiguous or unsupported claims should go to `docs/parking-lot.md` instead.
 
@@ -69,7 +127,9 @@ In non-interactive mode, Codex should not ask questions. Ambiguous or unsupporte
 - live web search enabled by default;
 - the `$codex-add-notes` skill as the required workflow.
 
-The request packet is internal plumbing. It copies arbitrary note files into the workspace so the source files can live outside the repo and do not need any special structure.
+The request packet is internal plumbing. It copies arbitrary note files into the workspace so the source files can live outside the repo and do not need any special structure. If you only provide inline intent text, the packet records that as the topic request. If you provide no input in interactive mode, the packet records that Codex should run an intake interview.
+
+The wrapper uses the Codex CLI's interactive TUI for normal sessions and `codex exec` for scripted sessions. The Codex CLI docs describe the interactive `codex` command as launching the terminal UI, and they recommend `--sandbox workspace-write --ask-for-approval on-request` for low-friction local work. The non-interactive docs describe `codex exec` as the scripted/CI entry point and recommend `--sandbox workspace-write` when file edits are needed.
 
 ## How structure stays intact
 
@@ -78,7 +138,7 @@ The workflow uses two layers:
 1. **Deterministic scripts** inspect and maintain structure.
    - `scripts/docs/outline.py --json` emits the current docs map before Codex decides where notes belong.
    - `scripts/docs/update_toc.py` regenerates TOCs and the docs index from Markdown headings.
-2. **Codex judgment** handles routing, rewriting, correction, diagrams, and official-reference selection.
+2. **Codex judgment** handles routing, rewriting, correction, diagrams, questions, and official-reference selection.
 
 That gives Codex enough context to make sound decisions without making the docs tree depend on fragile hardcoded topic lists.
 
