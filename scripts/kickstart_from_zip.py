@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
+
+WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,9 +49,9 @@ def sanitize_member(name: str, strip_components: int) -> Path | None:
     parts = parts[strip_components:]
     if any(part == ".." for part in parts):
         raise ValueError(f"Refusing to extract unsafe path: {name}")
-    if parts and parts[0].endswith(":"):
+    if parts and WINDOWS_DRIVE_PATTERN.match(parts[0]):
         raise ValueError(f"Refusing to extract unsafe drive path: {name}")
-    if parts and parts[0] == ".git":
+    if ".git" in parts:
         return None
 
     return Path(*parts)
