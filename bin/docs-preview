@@ -1,0 +1,514 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  docs-preview [options]
+
+Ensure a local Material for MkDocs preview is checked, running, and easy to open.
+
+Common commands:
+  docs-preview                  Smart-check the repo, start/reuse the preview, and print the URL.
+  docs-preview --restart        Re-run smart checks and restart the wrapper-managed server.
+  docs-preview --status         Show whether the wrapper-managed server is running.
+  docs-preview --stop           Stop the wrapper-managed server.
+  docs-preview --log            Show the most recent MkDocs server log lines.
+  docs-preview --foreground     Run MkDocs attached to this terminal for live debugging.
+
+Options:
+  --repo DIR       Documentation repository. Default: DOCS_PREVIEW_REPO, then current Git repo.
+  --host HOST      Bind host. Default: 127.0.0.1
+  --port PORT      Preferred port. Default: 8000
+  --check          Always run make check before serving.
+  --no-check       Do not run make check.
+  --restart        Restart the wrapper-managed server even if it is already running.
+  --foreground     Run MkDocs in the foreground after checks.
+  --status         Print wrapper-managed server status.
+  --stop           Stop the wrapper-managed server.
+  --log            Print the wrapper-managed MkDocs log tail.
+  --dry-run        Print planned actions without running checks or starting/stopping servers.
+  -h, --help       Show this help.
+
+What it does:
+  1. Resolves the repo.
+  2. Computes fingerprints of docs, MkDocs config, scripts, tests, and dependency files.
+  3. Runs make check only when those inputs changed since the last successful wrapper check,
+     unless --check or --no-check overrides that behavior.
+  4. Starts MkDocs in the background, reuses the wrapper-managed server when healthy,
+     or restarts it when server-critical files changed.
+  5. If the preferred port is busy, chooses the next free localhost port.
+  6. Prints the available web address in bold.
+
+State and logs:
+  .mkdocs-preview/              Wrapper runtime state, PID file, fingerprints, and logs.
+  .mkdocs-preview/mkdocs.log    MkDocs server log. Use --log to inspect it.
+
+Examples:
+  docs-preview
+  docs-preview --port 8010
+  docs-preview --restart
+  docs-preview --check
+  docs-preview --no-check
+  docs-preview --foreground
+  docs-preview --repo ~/dev/scaling-waffle
+
+Notes:
+  The wrapper never commits, pushes, or publishes anything. It only runs local checks
+  and local preview commands. For a regular terminal, background mode returns control
+  after printing the URL. If background processes are restricted by an execution
+  harness, use --foreground.
+
+Environment:
+  DOCS_PREVIEW_REPO   Default repo path.
+USAGE
+}
+
+repo_arg="${DOCS_PREVIEW_REPO:-}"
+host="127.0.0.1"
+port="8000"
+check_policy="smart"
+restart="0"
+foreground="0"
+action="ensure"
+dry_run="0"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo)
+      [[ $# -ge 2 ]] || { echo "error: --repo requires a directory" >&2; exit 2; }
+      repo_arg="$2"
+      shift
+      ;;
+    --host)
+      [[ $# -ge 2 ]] || { echo "error: --host requires a value" >&2; exit 2; }
+      host="$2"
+      shift
+      ;;
+    --port)
+      [[ $# -ge 2 ]] || { echo "error: --port requires a number" >&2; exit 2; }
+      port="$2"
+      shift
+      ;;
+    --check)
+      check_policy="always"
+      ;;
+    --no-check)
+      check_policy="never"
+      ;;
+    --restart)
+      restart="1"
+      ;;
+    --foreground)
+      foreground="1"
+      ;;
+    --status)
+      action="status"
+      ;;
+    --stop)
+      action="stop"
+      ;;
+    --log)
+      action="log"
+      ;;
+    --dry-run)
+      dry_run="1"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+case "$port" in
+  ''|*[!0-9]*)
+    echo "error: --port must be numeric" >&2
+    exit 2
+    ;;
+esac
+
+expand_home() {
+  case "$1" in
+    "~") printf '%s\n' "$HOME" ;;
+    "~/"*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+abs_path() {
+  local raw dir base
+  raw="$(expand_home "$1")"
+  if [[ -d "$raw" ]]; then
+    (cd "$raw" && pwd -P)
+    return 0
+  fi
+  dir="$(dirname "$raw")"
+  base="$(basename "$raw")"
+  if [[ -d "$dir" ]]; then
+    printf '%s/%s\n' "$(cd "$dir" && pwd -P)" "$base"
+  else
+    return 1
+  fi
+}
+
+resolve_repo_root() {
+  local configured="$1"
+  if [[ -n "$configured" ]]; then
+    local candidate
+    if ! candidate="$(abs_path "$configured")"; then
+      echo "error: repo does not exist: $configured" >&2
+      exit 2
+    fi
+    git -C "$candidate" rev-parse --show-toplevel 2>/dev/null || printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  if git rev-parse --show-toplevel >/dev/null 2>&1; then
+    git rev-parse --show-toplevel
+    return 0
+  fi
+
+  cat >&2 <<'ERR'
+error: not inside a Git repo and DOCS_PREVIEW_REPO is not set.
+
+Set a default repo once, for example:
+  export DOCS_PREVIEW_REPO="$HOME/dev/scaling-waffle"
+ERR
+  exit 2
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "error: required command not found: $1" >&2
+    exit 2
+  }
+}
+
+bold_url() {
+  printf '\033[1m%s\033[0m' "$1"
+}
+
+print_available_url() {
+  local url="$1"
+  printf 'Available at: '
+  bold_url "$url"
+  printf '\n'
+}
+
+repo_root="$(resolve_repo_root "$repo_arg")"
+repo_root="$(abs_path "$repo_root")"
+cd "$repo_root"
+
+require_command make
+require_command curl
+require_command shasum
+
+state_dir="$repo_root/.mkdocs-preview"
+pid_file="$state_dir/mkdocs.pid"
+host_file="$state_dir/host"
+port_file="$state_dir/port"
+url_file="$state_dir/url"
+log_file="$state_dir/mkdocs.log"
+check_fingerprint_file="$state_dir/last-check.sha256"
+server_fingerprint_file="$state_dir/server.sha256"
+
+url_for() {
+  printf 'http://%s:%s/\n' "$1" "$2"
+}
+
+is_port_in_use() {
+  local candidate_port="$1"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z "$host" "$candidate_port" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$candidate_port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
+find_free_port() {
+  local candidate="$1"
+  local limit=$((candidate + 100))
+  while is_port_in_use "$candidate"; do
+    candidate=$((candidate + 1))
+    if (( candidate > limit )); then
+      echo "error: could not find a free port after $1" >&2
+      exit 1
+    fi
+  done
+  printf '%s\n' "$candidate"
+}
+
+pid_alive() {
+  local pid="$1"
+  [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1
+}
+
+managed_pid() {
+  [[ -f "$pid_file" ]] && sed -n '1p' "$pid_file"
+}
+
+managed_host() {
+  [[ -f "$host_file" ]] && sed -n '1p' "$host_file" || printf '%s\n' "$host"
+}
+
+managed_port() {
+  [[ -f "$port_file" ]] && sed -n '1p' "$port_file" || printf '%s\n' "$port"
+}
+
+managed_url() {
+  [[ -f "$url_file" ]] && sed -n '1p' "$url_file" || url_for "$(managed_host)" "$(managed_port)"
+}
+
+url_ready() {
+  curl -fsS --max-time 2 "$1" >/dev/null 2>&1
+}
+
+managed_running() {
+  local pid url
+  pid="$(managed_pid || true)"
+  url="$(managed_url)"
+  pid_alive "$pid" && url_ready "$url"
+}
+
+stop_managed() {
+  local pid
+  pid="$(managed_pid || true)"
+  if [[ -z "$pid" ]] || ! pid_alive "$pid"; then
+    rm -f "$pid_file" "$host_file" "$port_file" "$url_file" "$server_fingerprint_file"
+    echo "No wrapper-managed MkDocs server is running."
+    return 0
+  fi
+
+  echo "Stopping wrapper-managed MkDocs server (pid $pid)..."
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -TERM -P "$pid" >/dev/null 2>&1 || true
+  fi
+  kill "$pid" >/dev/null 2>&1 || true
+
+  local attempt
+  for attempt in $(seq 1 20); do
+    if ! pid_alive "$pid"; then
+      rm -f "$pid_file" "$host_file" "$port_file" "$url_file" "$server_fingerprint_file"
+      echo "Stopped."
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -KILL -P "$pid" >/dev/null 2>&1 || true
+  fi
+  kill -KILL "$pid" >/dev/null 2>&1 || true
+  rm -f "$pid_file" "$host_file" "$port_file" "$url_file" "$server_fingerprint_file"
+  echo "Stopped."
+}
+
+fingerprint_roots() {
+  local mode="$1"
+  case "$mode" in
+    check)
+      printf '%s\n' docs mkdocs.yml Makefile pyproject.toml uv.lock scripts/docs scripts/mkdocs tests
+      ;;
+    server)
+      printf '%s\n' docs mkdocs.yml Makefile pyproject.toml uv.lock scripts/mkdocs
+      ;;
+  esac
+}
+
+fingerprint() {
+  local mode="$1"
+  {
+    while IFS= read -r root; do
+      if [[ -f "$root" ]]; then
+        printf '%s\n' "$root"
+      elif [[ -d "$root" ]]; then
+        find "$root" -type f \
+          ! -path '*/__pycache__/*' \
+          ! -path '*/.pytest_cache/*' \
+          ! -path '*/.mypy_cache/*' \
+          ! -path '*/.ruff_cache/*' \
+          -print
+      fi
+    done < <(fingerprint_roots "$mode")
+  } | LC_ALL=C sort | while IFS= read -r path; do
+    [[ -f "$path" ]] || continue
+    printf '%s\n' "$path"
+    shasum -a 256 "$path" | awk '{print $1}'
+  done | shasum -a 256 | awk '{print $1}'
+}
+
+stored_fingerprint() {
+  local file="$1"
+  [[ -f "$file" ]] && sed -n '1p' "$file" || true
+}
+
+check_needed() {
+  local current="$1"
+  local stored
+  stored="$(stored_fingerprint "$check_fingerprint_file")"
+  [[ "$check_policy" == "always" ]] && return 0
+  [[ "$check_policy" == "never" ]] && return 1
+  [[ "$current" != "$stored" ]]
+}
+
+run_checks_if_needed() {
+  local current_check="$1"
+  if [[ "$check_policy" == "never" ]]; then
+    echo "Skipping make check because --no-check was supplied."
+    return 0
+  fi
+  if check_needed "$current_check"; then
+    echo "Running make check..."
+    make check
+    mkdir -p "$state_dir"
+    printf '%s\n' "$current_check" > "$check_fingerprint_file"
+  else
+    echo "Checks unchanged since last successful wrapper run; skipping make check."
+  fi
+}
+
+wait_for_url() {
+  local url="$1"
+  local pid="${2:-}"
+  local attempt
+  for attempt in $(seq 1 60); do
+    if url_ready "$url"; then
+      return 0
+    fi
+    if [[ -n "$pid" ]] && ! pid_alive "$pid"; then
+      return 1
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+start_background_server() {
+  local serve_host="$1"
+  local serve_port="$2"
+  local serve_url current_server
+  serve_url="$(url_for "$serve_host" "$serve_port")"
+  current_server="$(fingerprint server)"
+
+  mkdir -p "$state_dir"
+  : > "$log_file"
+  echo "Starting MkDocs preview in the background..."
+  nohup make -C "$repo_root" docs-serve DOCS_HOST="$serve_host" DOCS_PORT="$serve_port" > "$log_file" 2>&1 < /dev/null &
+  local pid="$!"
+
+  printf '%s\n' "$pid" > "$pid_file"
+  printf '%s\n' "$serve_host" > "$host_file"
+  printf '%s\n' "$serve_port" > "$port_file"
+  printf '%s\n' "$serve_url" > "$url_file"
+  printf '%s\n' "$current_server" > "$server_fingerprint_file"
+
+  if wait_for_url "$serve_url" "$pid"; then
+    print_available_url "$serve_url"
+    echo "Log: $log_file"
+    return 0
+  fi
+
+  rm -f "$pid_file" "$host_file" "$port_file" "$url_file" "$server_fingerprint_file"
+  echo "error: MkDocs did not become ready at $serve_url" >&2
+  echo "Last log lines:" >&2
+  tail -n 80 "$log_file" >&2 || true
+  exit 1
+}
+
+status() {
+  if managed_running; then
+    echo "Wrapper-managed MkDocs server is running."
+    print_available_url "$(managed_url)"
+  else
+    echo "No wrapper-managed MkDocs server is running."
+  fi
+}
+
+print_log() {
+  if [[ -f "$log_file" ]]; then
+    tail -n 80 "$log_file"
+  else
+    echo "No wrapper log found at $log_file"
+  fi
+}
+
+current_check_fingerprint="$(fingerprint check)"
+current_server_fingerprint="$(fingerprint server)"
+stored_server_fingerprint="$(stored_fingerprint "$server_fingerprint_file")"
+
+if [[ "$dry_run" == "1" ]]; then
+  chosen_port="$port"
+  if is_port_in_use "$chosen_port" && ! managed_running; then
+    chosen_port="$(find_free_port "$chosen_port")"
+  fi
+  chosen_url="$(url_for "$host" "$chosen_port")"
+  printf 'dry_run=1\n'
+  printf 'repo_root=%s\n' "$repo_root"
+  printf 'state_dir=%s\n' "$state_dir"
+  printf 'action=%s\n' "$action"
+  printf 'check_policy=%s\n' "$check_policy"
+  if check_needed "$current_check_fingerprint"; then
+    printf 'check_needed=yes\n'
+  else
+    printf 'check_needed=no\n'
+  fi
+  printf 'check_fingerprint=%s\n' "$current_check_fingerprint"
+  printf 'server_fingerprint=%s\n' "$current_server_fingerprint"
+  print_available_url "$chosen_url"
+  exit 0
+fi
+
+case "$action" in
+  status)
+    status
+    exit 0
+    ;;
+  stop)
+    stop_managed
+    exit 0
+    ;;
+  log)
+    print_log
+    exit 0
+    ;;
+esac
+
+run_checks_if_needed "$current_check_fingerprint"
+
+if [[ "$foreground" == "1" ]]; then
+  chosen_port="$port"
+  if is_port_in_use "$chosen_port"; then
+    chosen_port="$(find_free_port "$chosen_port")"
+  fi
+  chosen_url="$(url_for "$host" "$chosen_port")"
+  print_available_url "$chosen_url"
+  exec make docs-serve DOCS_HOST="$host" DOCS_PORT="$chosen_port"
+fi
+
+if managed_running; then
+  if [[ "$restart" == "1" || "$current_server_fingerprint" != "$stored_server_fingerprint" ]]; then
+    stop_managed
+  else
+    echo "Wrapper-managed MkDocs server is already running."
+    print_available_url "$(managed_url)"
+    exit 0
+  fi
+fi
+
+chosen_port="$port"
+if is_port_in_use "$chosen_port"; then
+  chosen_port="$(find_free_port "$chosen_port")"
+fi
+
+start_background_server "$host" "$chosen_port"

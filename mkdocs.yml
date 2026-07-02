@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
+site_name: scaling-waffle
+docs_dir: docs
+site_dir: site
+
+exclude_docs: |
+  /_templates/
+
+theme:
+  name: material
+  features:
+    - content.action.edit
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+
+extra_css:
+  - assets/stylesheets/nav-tree.css
+
+edit_uri_template: !ENV MKDOCS_EDIT_URI_TEMPLATE
+
+hooks:
+  - scripts/mkdocs/hooks.py
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+validation:
+  links:
+    anchors: warn
+    unrecognized_links: warn
