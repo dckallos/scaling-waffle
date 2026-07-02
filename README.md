@@ -168,6 +168,64 @@ Or run everything with:
 make check
 ```
 
+## Local rendered preview
+
+Use Material for MkDocs to review the Markdown notes as a searchable local site. The preferred wrapper handles checks, reloads, logs, and port selection:
+
+```bash
+bin/docs-preview
+```
+
+It prints the available web address in bold. Open that URL in your browser. MkDocs reads Markdown from `docs/`, uses `README.md` files as index pages, and rewrites normal relative Markdown links in the rendered site. The generated HTML is written to `site/`, which is ignored by Git.
+
+While the server is running, saved changes under `docs/` or in `mkdocs.yml` trigger a rebuild and browser reload. The left sidebar uses a file-tree treatment with folder/file icons, folder indentation, and source-oriented labels, while each page keeps its readable heading in the main content.
+
+Rendered pages include a local edit button that opens the underlying Markdown file in VS Code through a `vscode://file/...` link. This is local-only; it does not commit, push, or open a GitHub editor.
+
+Useful wrapper commands:
+
+```bash
+# Start or reuse the local preview and print the URL.
+bin/docs-preview
+
+# See whether a wrapper-managed server is running.
+bin/docs-preview --status
+
+# Restart after config, dependency, or navigation changes.
+bin/docs-preview --restart
+
+# Stop the wrapper-managed background server.
+bin/docs-preview --stop
+
+# Show the MkDocs server log tail.
+bin/docs-preview --log
+
+# Run attached to the terminal when you want live logs.
+bin/docs-preview --foreground
+
+# Force checks even if the wrapper fingerprint has not changed.
+bin/docs-preview --check
+
+# Skip checks for a quick local preview.
+bin/docs-preview --no-check
+```
+
+By default, the wrapper runs `make check` only when relevant docs, config, scripts, dependencies, or tests changed since the last successful wrapper check. It starts MkDocs in the background, reuses the wrapper-managed server when it is healthy, restarts it when server-critical files changed, and chooses the next free localhost port if `8000` is already occupied. Runtime state and logs live under `.mkdocs-preview/`, which is ignored by Git.
+
+The wrapper's help output is the quick reference:
+
+```bash
+bin/docs-preview --help
+```
+
+To validate the rendered site without starting the local server:
+
+```bash
+make docs-build
+```
+
+The rendered site is only a review aid. Markdown under `docs/` remains the source of truth, and `scripts/docs/update_toc.py` still owns generated Markdown TOCs and the docs index.
+
 ## Multiple documentation repos
 
 Start with this repo containing both the workflow and your first docs library. That is the least fragile setup.
